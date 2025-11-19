@@ -1,0 +1,215 @@
+{
+  "configHeader": {
+    "dateCreated_ISO": "2024-12-13T07:30:27.561Z",
+    "appVersion": "2.3.4",
+    "boardType": "board_8",
+    "boardMode": "heater_profile_exploration",
+    "boardLayout": "grouped"
+  },
+  "configBody": {
+    "heaterProfiles": [
+      {
+        "id": "heater_354",
+        "timeBase": 140,
+        "temperatureTimeVectors": [
+          [
+            320,
+            5
+          ],
+          [
+            100,
+            2
+          ],
+          [
+            100,
+            10
+          ],
+          [
+            100,
+            30
+          ],
+          [
+            200,
+            5
+          ],
+          [
+            200,
+            5
+          ],
+          [
+            200,
+            5
+          ],
+          [
+            320,
+            5
+          ],
+          [
+            320,
+            5
+          ],
+          [
+            320,
+            5
+          ]
+        ]
+      }
+    ],
+    "dutyCycleProfiles": [
+      {
+        "id": "duty_1",
+        "numberScanningCycles": 1,
+        "numberSleepingCycles": 0
+      }
+    ],
+    "sensorConfigurations": [
+      {
+        "sensorIndex": 0,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 1,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 2,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 3,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 4,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 5,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 6,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      },
+      {
+        "sensorIndex": 7,
+        "heaterProfile": "heater_354",
+        "dutyCycleProfile": "duty_1"
+      }
+    ]
+  }
+	,
+	"rawDataHeader": {
+		"counterPowerOnOff": 1,
+		"seedPowerOnOff": "6twbmbozs488muom",
+		"counterFileLimit": 1,
+		"dateCreated": "1722344704",
+		"dateCreated_ISO": "2024-07-30T13:05:04+00:00",
+		"firmwareVersion": "2.1.5",
+		"boardId": "E05A1B0D1128"
+	},
+	"rawDataBody": {
+		"dataColumns": [
+			{
+				"name": "Sensor Index",
+				"unit": "",
+				"format": "integer",
+				"key": "sensor_index",
+				"colId": 1
+			},
+			{
+				"name": "Sensor ID",
+				"unit": "",
+				"format": "integer",
+				"key": "sensor_id",
+				"colId": 2
+			},
+			{
+				"name": "Time Since PowerOn",
+				"unit": "Milliseconds",
+				"format": "integer",
+				"key": "timestamp_since_poweron",
+				"colId": 3
+			},
+			{
+				"name": "Real time clock",
+				"unit": "Unix Timestamp: seconds since Jan 01 1970. (UTC); 0 = missing",
+				"format": "integer",
+				"key": "real_time_clock",
+				"colId": 4
+			},
+			{
+				"name": "Temperature",
+				"unit": "DegreesCelcius",
+				"format": "float",
+				"key": "temperature",
+				"colId": 5
+			},
+			{
+				"name": "Pressure",
+				"unit": "Hectopascals",
+				"format": "float",
+				"key": "pressure",
+				"colId": 6
+			},
+			{
+				"name": "Relative Humidity",
+				"unit": "Percent",
+				"format": "float",
+				"key": "relative_humidity",
+				"colId": 7
+			},
+			{
+				"name": "Resistance Gassensor",
+				"unit": "Ohms",
+				"format": "float",
+				"key": "resistance_gassensor",
+				"colId": 8
+			},
+			{
+				"name": "Heater Profile Step Index",
+				"unit": "",
+				"format": "integer",
+				"key": "heater_profile_step_index",
+				"colId": 9
+			},
+			{
+				"name": "Scanning Mode Enabled",
+				"unit": "",
+				"format": "boolean",
+				"key": "scanning_enabled",
+				"colId": 10
+			},
+			{
+				"name": "Scanning Cycle Index",
+				"unit": "",
+				"format": "integer",
+				"key": "scanning_cycle_index",
+				"colId": 11
+			},
+			{
+				"name": "Label Tag",
+				"unit": "",
+				"format": "integer",
+				"key": "label_tag",
+				"colId": 12
+			},
+			{
+				"name": "Error Code",
+				"unit": "",
+				"format": "integer",
+				"key": "error_code",
+				"colId": 13
+			}
+		],
+		"dataBlock": [
+		]
+	}
+}
