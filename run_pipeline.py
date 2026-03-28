@@ -24,16 +24,19 @@ def run():
     from data_utils import (
         BASE_DIR, SUBSTANCES, N_SENSORS, N_STEPS, N_WARMUP, M_STEADY,
         TARGET_SAMPLES_PER_SUBSTANCE, WINDOW_STRIDE,
+        resolve_substance_folder, load_substance_measurement_blocks,
         load_folder_blocks, compute_baseline, compute_stats, apply_windowing,
         apply_windowing_multi, normalize_block, extract_features, get_valid_sensors,
     )
-    SUBSTANCE_PREFIX = {s: s for s in SUBSTANCES}
+    # SUBSTANCE_PREFIX = {s: s for s in SUBSTANCES}
 
     print("Steps 1-3: Load + windowing (n=30 warmup, m=10 steady)...")
     all_raw_blocks = {}
     for sub in SUBSTANCES:
-        folder = BASE_DIR / sub
-        if not folder.exists():
+        # folder = BASE_DIR / sub
+        # if not folder.exists():
+        folder = resolve_substance_folder(BASE_DIR, sub)
+        if folder is None:
             continue
         blocks, labels = load_folder_blocks(folder, "Normal_Air_*")
         if not blocks:
@@ -51,10 +54,14 @@ def run():
 
     print("Steps 4, 6-7: Gate sensors, normalize, extract features (sliding windows for ~300/substance)...")
     def load_substance_data(sub):
-        folder = BASE_DIR / sub
-        prefix = SUBSTANCE_PREFIX.get(sub, sub)
+        # folder = BASE_DIR / sub
+        # prefix = SUBSTANCE_PREFIX.get(sub, sub)
+        folder = resolve_substance_folder(BASE_DIR, sub)
+        if folder is None:
+            return [], [], [], []
         norm_blks, norm_lbls = all_raw_blocks.get(sub, ([], []))
-        sub_blocks, sub_labels = load_folder_blocks(folder, f"{prefix}_*")
+        # sub_blocks, sub_labels = load_folder_blocks(folder, f"{prefix}_*")
+        sub_blocks, sub_labels = load_substance_measurement_blocks(folder, sub)
         # Multi-window: each raw block → multiple windowed sub-blocks (for ~300 samples)
         sub_windowed, sub_windowed_labels = [], []
         for b, lbl in zip(sub_blocks, sub_labels):
@@ -86,7 +93,9 @@ def run():
             continue
         norm_blks, norm_lbls, sub_blks, sub_lbls = load_substance_data(sub)
         baseline = calibration[sub]
-        for blocks, labels, tag in [(norm_blks, norm_lbls, "Normal_Air"), (sub_blks, sub_lbls, sub)]:
+        # for blocks, labels, tag in [(norm_blks, norm_lbls, "Normal_Air"), (sub_blks, sub_lbls, sub)]:
+        normal_tag = f"Normal_Air_{sub}"
+        for blocks, labels, tag in [(norm_blks, norm_lbls, normal_tag), (sub_blks, sub_lbls, sub)]:
             if not blocks:
                 continue
             if len(labels) != len(blocks):
@@ -94,7 +103,8 @@ def run():
             _, _, valid_blocks = process_blocks(blocks, labels, baseline, tag)
             indices = list(range(len(valid_blocks)))
             # Cap substance samples at TARGET_SAMPLES_PER_SUBSTANCE (300)
-            if tag != "Normal_Air" and len(indices) > TARGET_SAMPLES_PER_SUBSTANCE:
+            # if tag != "Normal_Air" and len(indices) > TARGET_SAMPLES_PER_SUBSTANCE:
+            if not str(tag).startswith("Normal_Air") and len(indices) > TARGET_SAMPLES_PER_SUBSTANCE:
                 indices = rng.choice(len(valid_blocks), TARGET_SAMPLES_PER_SUBSTANCE, replace=False)
             for i in indices:
                 blk, lbl, vs = valid_blocks[i]
@@ -148,7 +158,9 @@ def run():
     X_scaled = StandardScaler().fit_transform(X_clean)
 
     # Exclude Normal Air from dim reduction — substances only
-    sub_mask = y != "Normal_Air"
+    # sub_mask = y != "Normal_Air"
+    # Exclude calibration (Normal_Air_*) from dim reduction — substances only
+    sub_mask = np.array([not str(lab).startswith("Normal_Air") for lab in y])
     X_sub = X_scaled[sub_mask]
     y_sub = y[sub_mask]
 
@@ -176,7 +188,8 @@ def run():
     print("Step 11: Anomaly scoring (train on Normal Air, evaluate on all)...")
     from sklearn.ensemble import IsolationForest
 
-    normal_mask = y == "Normal_Air"
+    # normal_mask = y == "Normal_Air"
+    normal_mask = np.array([str(lab).startswith("Normal_Air") for lab in y])
     X_normal = X_scaled[normal_mask]
     X_all = X_scaled
 
