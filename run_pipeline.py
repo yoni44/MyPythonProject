@@ -1,230 +1,336 @@
 """
-Full anomaly detection pipeline.
-Steps 1-3: Windowing (drop first 30, take 10 steady-state per sensor×HS)
-Step 4: Gate bad sensors
-Steps 5-6: Calibration (Normal Air baseline) + normalization
-Step 7: Repeat across all p blocks and substances
-Steps 8-9: 80 plots raw + 80 normalized per substance
-Step 10: Global dim reduction (PCA/t-SNE/UMAP)
-Step 11: Anomaly scoring — model trained on Normal Air, evaluated on all
+Data loading and processing utilities for BME688 multi-dimensional sensor data.
+Structure: 8 sensors × 10 heating steps × m GR values per block.
 """
-import sys
+
+import json
+import numpy as np
+import pandas as pd
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
+from collections import defaultdict
+from typing import Dict, List, Tuple, Optional
 
-import matplotlib
-matplotlib.use("Agg")
+try:
+    BASE_DIR = Path(__file__).resolve().parent
+except NameError:
+    BASE_DIR = Path.cwd()
+SUBSTANCES = ["Acetone", "Redidlo", "Softasept", "Savo", "Vinegar"]
+N_SENSORS, N_STEPS = 8, 10
 
-def run():
-    import numpy as np
-    from collections import defaultdict
-    import matplotlib.pyplot as plt
-    import warnings
-    warnings.filterwarnings("ignore")
-    from data_utils import (
-        BASE_DIR, SUBSTANCES, N_SENSORS, N_STEPS, N_WARMUP, M_STEADY,
-        TARGET_SAMPLES_PER_SUBSTANCE, WINDOW_STRIDE,
-        load_folder_blocks, compute_baseline, compute_stats, apply_windowing,
-        apply_windowing_multi, normalize_block, extract_features, get_valid_sensors,
-    )
-    SUBSTANCE_PREFIX = {s: s for s in SUBSTANCES}
 
-    print("Steps 1-3: Load + windowing (n=30 warmup, m=10 steady)...")
-    all_raw_blocks = {}
-    for sub in SUBSTANCES:
-        folder = BASE_DIR / sub
-        if not folder.exists():
-            continue
-        blocks, labels = load_folder_blocks(folder, "Normal_Air_*")
-        if not blocks:
-            blocks, labels = load_folder_blocks(folder, "Normal*")
-        windowed = [apply_windowing(b, n=N_WARMUP, m=M_STEADY) for b in blocks]
-        all_raw_blocks[sub] = (windowed, labels)
+def resolve_substance_folder(base: Path, sub: str) -> Optional[Path]:
+    """Folder with Normal Air + measurement files for this material. Handles Acetone vs Aceton."""
+    if sub == "Acetone":
+        for name in ("Acetone", "Aceton"):
+            p = base / name
+            if p.is_dir():
+                return p
+        return None
+    p = base / sub
+    return p if p.is_dir() else None
 
-    print("Step 5: Calibration (Normal Air baseline)...")
-    calibration = {}
-    for sub in SUBSTANCES:
-        if sub not in all_raw_blocks:
-            continue
-        windowed, _ = all_raw_blocks[sub]
-        calibration[sub] = compute_baseline(windowed, apply_windowing_flag=False)
 
-    print("Steps 4, 6-7: Gate sensors, normalize, extract features (sliding windows for ~300/substance)...")
-    def load_substance_data(sub):
-        folder = BASE_DIR / sub
-        prefix = SUBSTANCE_PREFIX.get(sub, sub)
-        norm_blks, norm_lbls = all_raw_blocks.get(sub, ([], []))
-        sub_blocks, sub_labels = load_folder_blocks(folder, f"{prefix}_*")
-        # Multi-window: each raw block → multiple windowed sub-blocks (for ~300 samples)
-        sub_windowed, sub_windowed_labels = [], []
-        for b, lbl in zip(sub_blocks, sub_labels):
-            for i, w in enumerate(apply_windowing_multi(b, stride=WINDOW_STRIDE)):
-                sub_windowed.append(w)
-                sub_windowed_labels.append(f"{lbl}_w{i}" if i > 0 else lbl)
-        return norm_blks, norm_lbls, sub_windowed, sub_windowed_labels
+def measurement_file_prefixes(sub: str) -> Tuple[str, ...]:
+    """Glob prefixes for substance vapour files (not Normal Air)."""
+    if sub == "Acetone":
+        return ("Acetone", "Aceton")
+    return (sub,)
 
-    def process_blocks(blocks, labels, baseline, tag):
-        raw, norm, valid_list = defaultdict(list), defaultdict(list), []
-        for blk, lbl in zip(blocks, labels):
-            vs = get_valid_sensors(blk)
-            if len(vs) < 4:
+
+def load_substance_measurement_blocks(folder: Path, sub: str) -> Tuple[List, List]:
+    """
+    Load blocks from Acetone_* / Aceton_* (etc.). Skips Normal_Air_* if a pattern ever overlaps.
+    Deduplicates by resolved path when both spellings exist.
+    """
+    seen = set()
+    blocks, labels = [], []
+    for pref in measurement_file_prefixes(sub):
+        for f in sorted(folder.glob(f"{pref}_*")):
+            if f.stem.lower().startswith("normal_air"):
                 continue
-            valid_list.append((blk, lbl, vs))
-            nb = normalize_block(blk, baseline)
-            for (s, st), vals in blk.items():
-                if s in vs and vals:
-                    raw[(s, st)].extend(vals)
-            for (s, st), arr in nb.items():
-                if s in vs and len(arr) > 0:
-                    norm[(s, st)].extend(arr.tolist())
-        return raw, norm, valid_list
-
-    all_features, all_labels, block_labels = [], [], []
-    rng = np.random.default_rng(42)
-    for sub in SUBSTANCES:
-        if sub not in calibration:
-            continue
-        norm_blks, norm_lbls, sub_blks, sub_lbls = load_substance_data(sub)
-        baseline = calibration[sub]
-        for blocks, labels, tag in [(norm_blks, norm_lbls, "Normal_Air"), (sub_blks, sub_lbls, sub)]:
-            if not blocks:
+            key = f.resolve()
+            if key in seen:
                 continue
-            if len(labels) != len(blocks):
-                labels = [f"b{i}" for i in range(len(blocks))]
-            _, _, valid_blocks = process_blocks(blocks, labels, baseline, tag)
-            indices = list(range(len(valid_blocks)))
-            # Cap substance samples at TARGET_SAMPLES_PER_SUBSTANCE (300)
-            if tag != "Normal_Air" and len(indices) > TARGET_SAMPLES_PER_SUBSTANCE:
-                indices = rng.choice(len(valid_blocks), TARGET_SAMPLES_PER_SUBSTANCE, replace=False)
-            for i in indices:
-                blk, lbl, vs = valid_blocks[i]
-                all_features.append(extract_features(blk, baseline, vs))
-                all_labels.append(tag)
-                block_labels.append(f"{tag}_{lbl}")
+            seen.add(key)
+            blks = load_blocks_from_file(f)
+            for i, b in enumerate(blks):
+                blocks.append(b)
+                labels.append(f"{f.stem}" + (f"_{i}" if len(blks) > 1 else ""))
+    return blocks, labels
 
-    X = np.vstack(all_features)
-    y = np.array(all_labels)
-    print(f"  X: {X.shape}, blocks: {len(all_labels)}")
 
-    print("Steps 8-9: 80 plots raw + normalized per substance...")
-    OUTPUT_DIR = BASE_DIR / "pipeline_output"
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    (OUTPUT_DIR / "stats_plots").mkdir(exist_ok=True)
+SENSOR_COL, STEP_COL, GR_COL, ERROR_COL, CYCLE_COL = 0, 8, 7, 12, 11
 
-    def plot_80_grid(data, title, filepath, stat_key="median"):
-        fig, axes = plt.subplots(8, 10, figsize=(18, 12))
-        for s in range(N_SENSORS):
-            for st in range(N_STEPS):
-                ax = axes[s, st]
-                vals = data.get((s, st), [])
-                if vals:
-                    stats = compute_stats(np.array(vals))
-                    v = stats.get(stat_key, 0)
-                    v = 0 if (np.isnan(v) or np.isinf(v)) else float(v)
-                    ax.bar([stat_key], [v], color="steelblue")
-                ax.set_title(f"S{s} HS{st}", fontsize=7)
-        plt.suptitle(title)
-        plt.tight_layout()
-        plt.savefig(filepath, dpi=100, bbox_inches="tight")
-        plt.close()
+# Windowing: drop first n unstable, take m steady-state values per (sensor, HS)
+N_WARMUP, M_STEADY = 30, 10
 
-    for sub in SUBSTANCES:
-        if sub not in calibration:
+# Target samples per substance for visualization (sliding windows used to reach this)
+TARGET_SAMPLES_PER_SUBSTANCE = 300
+WINDOW_STRIDE = 1  # stride for sliding windows (1 = max overlap, ~300 samples/substance)
+
+# Statistical features for calibration and feature extraction
+STAT_NAMES = ["median", "mean", "std", "min", "max", "q25", "q75", "range", "cv", "count"]
+
+
+def apply_windowing(
+    block: Dict[Tuple[int, int], List[float]], n: int = N_WARMUP, m: int = M_STEADY
+) -> Dict[Tuple[int, int], List[float]]:
+    """
+    Raw data windowing: discard first n unstable samples, take exactly m steady-state values
+    per (sensor, HS). If fewer than n+m values, take last m (fallback to include more samples).
+    """
+    out = {}
+    for (s, st), vals in block.items():
+        arr = np.array(vals, dtype=float)
+        if len(arr) >= n + m:
+            steady = arr[n : n + m].tolist()
+            out[(s, st)] = steady
+        elif len(arr) >= m:
+            # Fallback: take last m values (more samples for visualization)
+            steady = arr[-m:].tolist()
+            out[(s, st)] = steady
+        else:
+            out[(s, st)] = []
+    return out
+
+
+def apply_windowing_multi(
+    block: Dict[Tuple[int, int], List[float]],
+    n: int = N_WARMUP,
+    m: int = M_STEADY,
+    stride: int = WINDOW_STRIDE,
+    max_windows: int = 100,
+) -> List[Dict[Tuple[int, int], List[float]]]:
+    """
+    Extract multiple windowed sub-blocks from one raw block using sliding windows.
+    Use to increase sample count (e.g. ~300 per substance for visualization).
+    Returns list of windowed blocks.
+    """
+    if stride < 1:
+        stride = 1
+    # Find min length across (sensor, step) for valid keys (need at least m values)
+    lengths = {}
+    for (s, st), vals in block.items():
+        L = len(vals)
+        if L >= m:
+            lengths[(s, st)] = L
+    if not lengths:
+        return []
+
+    min_len = min(lengths.values())
+    keys_ok = [k for k, L in lengths.items() if L >= n + m]
+
+    if not keys_ok:
+        # Fallback: take last m for at least one window
+        out_blk = {}
+        for (s, st), vals in block.items():
+            arr = np.array(vals, dtype=float)
+            if len(arr) >= m:
+                out_blk[(s, st)] = arr[-m:].tolist()
+            else:
+                out_blk[(s, st)] = []
+        return [out_blk] if out_blk else []
+
+    # Steady-state windows: [n, n+m), [n+stride, n+stride+m), ...
+    n_windows = 0
+    start = n
+    while start + m <= min_len and n_windows < max_windows:
+        n_windows += 1
+        start += stride
+    if n_windows == 0:
+        # Single window [n:n+m] or last m
+        return [apply_windowing(block, n=n, m=m)]
+
+    result = []
+    for i in range(min(n_windows, max_windows)):
+        start = n + i * stride
+        if start + m > min_len:
+            break
+        sub = {}
+        for (s, st), vals in block.items():
+            arr = np.array(vals, dtype=float)
+            if len(arr) >= start + m:
+                sub[(s, st)] = arr[start : start + m].tolist()
+            elif len(arr) >= m:
+                sub[(s, st)] = arr[-m:].tolist()  # fallback: keep last m for validity
+            else:
+                sub[(s, st)] = []
+        if sub:
+            result.append(sub)
+    return result if result else [apply_windowing(block, n=n, m=m)]
+
+
+def _parse_bmerawdata_block(data_block: list) -> Dict[Tuple[int, int], List[float]]:
+    """Parse dataBlock into dict (sensor, step) -> list of GR values."""
+    gr = defaultdict(list)
+    for row in data_block:
+        if len(row) < 13:
             continue
-        norm_blks, _, sub_blks, _ = load_substance_data(sub)
-        combined = norm_blks + sub_blks
-        raw_r, norm_r, _ = process_blocks(
-            combined, [""] * len(combined), calibration[sub], sub
-        )
-        plot_80_grid(raw_r, f"{sub} Raw (m=10)", OUTPUT_DIR / f"stats_plots/{sub}_raw.png")
-        plot_80_grid(norm_r, f"{sub} Normalized", OUTPUT_DIR / f"stats_plots/{sub}_norm.png")
-    print("  Saved")
+        s, st, g = row[SENSOR_COL], row[STEP_COL], row[GR_COL]
+        err = row[ERROR_COL] if len(row) > ERROR_COL else 0
+        if g > 0 and err == 0:
+            gr[(s, st)].append(g)
+    return dict(gr)
 
-    print("Step 10: PCA / t-SNE / UMAP (substances only, Normal Air excluded)...")
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    X_clean = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
-    X_scaled = StandardScaler().fit_transform(X_clean)
 
-    # Exclude Normal Air from dim reduction — substances only
-    sub_mask = y != "Normal_Air"
-    X_sub = X_scaled[sub_mask]
-    y_sub = y[sub_mask]
+def _parse_csv_block(df: pd.DataFrame) -> Dict[Tuple[int, int], List[float]]:
+    """Parse CSV into dict (sensor, step) -> list of GR values."""
+    gr = defaultdict(list)
+    for snum in range(1, 9):
+        for stnum in range(1, 11):
+            col = f"bme688_{snum}_gas_res_step{stnum}"
+            if col not in df.columns:
+                continue
+            vals = pd.to_numeric(df[col], errors="coerce").dropna()
+            vals = vals[vals > 0]
+            gr[(snum - 1, stnum - 1)].extend(vals.tolist())
+    return dict(gr)
 
-    X_pca = PCA(n_components=2, random_state=42).fit_transform(X_sub)
-    perplexity = min(30, max(5, len(X_sub) - 1))
-    X_tsne = TSNE(n_components=2, random_state=42, perplexity=perplexity).fit_transform(X_sub)
+
+def load_block_bmerawdata(fpath: Path) -> List[Dict[Tuple[int, int], List[float]]]:
+    """Load .bmerawdata file. Returns list of blocks (one per scanning cycle)."""
     try:
-        import umap
-        X_umap = umap.UMAP(n_components=2, random_state=42).fit_transform(X_sub)
-    except ImportError:
-        X_umap = X_pca
+        data = json.load(open(fpath, "r", encoding="utf-8"))
+    except Exception:
+        return []
+    data_block = data.get("rawDataBody", {}).get("dataBlock", [])
+    if not data_block:
+        return []
+    # Group by (sensor, step, cycle) then by cycle
+    by_cycle = defaultdict(lambda: defaultdict(list))
+    for row in data_block:
+        if len(row) < 13:
+            continue
+        s, st, g = row[SENSOR_COL], row[STEP_COL], row[GR_COL]
+        cycle = row[CYCLE_COL] if len(row) > CYCLE_COL else 0
+        err = row[ERROR_COL] if len(row) > ERROR_COL else 0
+        if g > 0 and err == 0:
+            by_cycle[cycle][(s, st)].append(g)
+    return [dict(c) for c in by_cycle.values()]
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    for ax, emb, name in zip(axes, [X_pca, X_tsne, X_umap], ["PCA", "t-SNE", "UMAP"]):
-        for lab in np.unique(y_sub):
-            mask = y_sub == lab
-            ax.scatter(emb[mask, 0], emb[mask, 1], label=lab, alpha=0.6, s=40)
-        ax.set_title(name)
-        ax.legend(fontsize=8)
-    plt.suptitle("Step 10: Dimensionality reduction (substances only)")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "dim_reduction.png", dpi=120, bbox_inches="tight")
-    plt.close()
 
-    print("Step 11: Anomaly scoring (train on Normal Air, evaluate on all)...")
-    from sklearn.ensemble import IsolationForest
-
-    normal_mask = y == "Normal_Air"
-    X_normal = X_scaled[normal_mask]
-    X_all = X_scaled
-
-    model = IsolationForest(contamination=0.1, random_state=42)
-    model.fit(X_normal)
-    scores = model.decision_function(X_all)  # higher = more normal
-    preds = model.predict(X_all)  # 1=normal, -1=anomaly
-
-    # Per-substance summary
-    results = []
-    for lab in np.unique(y):
-        mask = y == lab
-        n = mask.sum()
-        n_anomaly = (preds[mask] == -1).sum()
-        mean_score = scores[mask].mean()
-        results.append((lab, n, n_anomaly, 100 * n_anomaly / n, mean_score))
-
-    out_path = OUTPUT_DIR / "anomaly_scores.csv"
-    with open(out_path, "w") as f:
-        f.write("substance,n_blocks,n_anomalies,pct_anomalous,mean_decision_score\n")
-        for lab, n, na, pct, ms in results:
-            f.write(f"{lab},{n},{na},{pct:.1f},{ms:.4f}\n")
-    print("  Results:")
-    for lab, n, na, pct, ms in results:
-        print(f"    {lab}: {n} blocks, {na} anomalies ({pct:.1f}%), mean_score={ms:.3f}")
-    print(f"  Saved {out_path}")
-
-    # Anomaly score distribution plot
-    fig, ax = plt.subplots(figsize=(10, 5))
-    for lab in np.unique(y):
-        mask = y == lab
-        ax.hist(scores[mask], bins=20, alpha=0.5, label=lab, density=True)
-    ax.axvline(0, color="black", linestyle="--", label="decision boundary")
-    ax.set_xlabel("Anomaly score (higher = more normal)")
-    ax.set_ylabel("Density")
-    ax.legend()
-    ax.set_title("Step 11: Anomaly score distribution by substance")
-    plt.tight_layout()
-    plt.savefig(OUTPUT_DIR / "anomaly_scores.png", dpi=120, bbox_inches="tight")
-    plt.close()
-    print("  Saved anomaly_scores.png")
-    print("\nDone. Output in pipeline_output/")
-
-if __name__ == "__main__":
+def load_block_csv(fpath: Path) -> List[Dict[Tuple[int, int], List[float]]]:
+    """Load CSV file. Each file = 1 block."""
     try:
-        run()
-    except Exception as e:
-        import traceback
-        print(f"\nERROR: {e}")
-        traceback.print_exc()
-        sys.exit(1)
+        df = pd.read_csv(fpath)
+    except Exception:
+        return []
+    gr = _parse_csv_block(df)
+    return [gr] if gr else []
+
+
+def load_blocks_from_file(fpath: Path) -> List[Dict[Tuple[int, int], List[float]]]:
+    """Load blocks from file (bmerawdata or csv)."""
+    if fpath.suffix.lower() == ".csv":
+        return load_block_csv(fpath)
+    return load_block_bmerawdata(fpath)
+
+
+def load_folder_blocks(
+    folder: Path, pattern: str
+) -> Tuple[List[Dict], List[str]]:
+    """Load all blocks from files matching pattern. Returns (blocks, block_labels)."""
+    files = sorted(folder.glob(pattern))
+    blocks, labels = [], []
+    for f in files:
+        blks = load_blocks_from_file(f)
+        for i, b in enumerate(blks):
+            blocks.append(b)
+            labels.append(f"{f.stem}" + (f"_{i}" if len(blks) > 1 else ""))
+    return blocks, labels
+
+
+def compute_stats(vals: np.ndarray) -> Dict[str, float]:
+    """Compute statistical features for a 1D array."""
+    if len(vals) == 0:
+        return {k: np.nan for k in STAT_NAMES}
+    q25, q75 = np.percentile(vals, [25, 75])
+    std = np.std(vals)
+    mean = np.mean(vals)
+    cv = (std / mean * 100) if mean != 0 else np.nan
+    return {
+        "median": np.median(vals),
+        "mean": mean,
+        "std": std if not np.isnan(std) else 0,
+        "min": np.min(vals),
+        "max": np.max(vals),
+        "q25": q25,
+        "q75": q75,
+        "range": np.max(vals) - np.min(vals),
+        "cv": cv,
+        "count": len(vals),
+    }
+
+
+def compute_baseline(
+    blocks: List[Dict],
+    apply_windowing_flag: bool = True,
+    n: int = N_WARMUP,
+    m: int = M_STEADY,
+) -> Dict[Tuple[int, int], Dict[str, float]]:
+    """Compute calibration baseline from Normal Air. Pool GR across blocks, stats per (sensor, step)."""
+    pooled = defaultdict(list)
+    for blk in blocks:
+        if apply_windowing_flag:
+            blk = apply_windowing(blk, n=n, m=m)
+        for (s, st), vals in blk.items():
+            if len(vals) >= m:
+                pooled[(s, st)].extend(vals)
+    return {k: compute_stats(np.array(v)) for k, v in pooled.items()}
+
+
+def is_sensor_valid(
+    block: Dict,
+    sensor: int,
+    min_steps_with_data: int = 5,
+    min_count_per_step: int = M_STEADY,
+    gr_min: float = 1,
+    gr_max: float = 1e10,
+) -> bool:
+    """Gate bad sensors: require enough steady-state readings per step, reasonable range."""
+    steps_ok = 0
+    for st in range(N_STEPS):
+        vals = block.get((sensor, st), [])
+        if len(vals) >= min_count_per_step:
+            arr = np.array(vals)
+            if np.all(arr >= gr_min) and np.all(arr <= gr_max):
+                steps_ok += 1
+    return steps_ok >= min_steps_with_data
+
+
+def normalize_block(
+    block: Dict, baseline: Dict[Tuple[int, int], Dict[str, float]]
+) -> Dict[Tuple[int, int], np.ndarray]:
+    """Normalize block: (GR - median) / std, using baseline. Returns normalized arrays."""
+    out = {}
+    for (s, st), vals in block.items():
+        b = baseline.get((s, st), {})
+        med = b.get("median", np.nan)
+        std = b.get("std", 1.0)
+        if np.isnan(med) or std <= 0:
+            std = 1.0
+        arr = np.array(vals, dtype=float)
+        out[(s, st)] = (arr - med) / std
+    return out
+
+
+def extract_features(
+    block: Dict,
+    baseline: Dict,
+    valid_sensors: Optional[List[int]] = None,
+) -> np.ndarray:
+    """Extract flat feature vector: stats per (sensor, step) for valid sensors."""
+    if valid_sensors is None:
+        valid_sensors = list(range(N_SENSORS))
+    feats = []
+    for s in valid_sensors:
+        for st in range(N_STEPS):
+            vals = block.get((s, st), [])
+            stats = compute_stats(np.array(vals))
+            feats.extend([stats[k] for k in STAT_NAMES])
+    return np.array(feats, dtype=float)
+
+
+def get_valid_sensors(block: Dict) -> List[int]:
+    """Return list of valid sensor indices for this block."""
+    return [s for s in range(N_SENSORS) if is_sensor_valid(block, s)]
