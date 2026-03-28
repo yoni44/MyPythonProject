@@ -16,6 +16,49 @@ except NameError:
     BASE_DIR = Path.cwd()
 SUBSTANCES = ["Acetone", "Redidlo", "Softasept", "Savo", "Vinegar"]
 N_SENSORS, N_STEPS = 8, 10
+
+
+def resolve_substance_folder(base: Path, sub: str) -> Optional[Path]:
+    """Folder with Normal Air + measurement files for this material. Handles Acetone vs Aceton."""
+    if sub == "Acetone":
+        for name in ("Acetone", "Aceton"):
+            p = base / name
+            if p.is_dir():
+                return p
+        return None
+    p = base / sub
+    return p if p.is_dir() else None
+
+
+def measurement_file_prefixes(sub: str) -> Tuple[str, ...]:
+    """Glob prefixes for substance vapour files (not Normal Air)."""
+    if sub == "Acetone":
+        return ("Acetone", "Aceton")
+    return (sub,)
+
+
+def load_substance_measurement_blocks(folder: Path, sub: str) -> Tuple[List, List]:
+    """
+    Load blocks from Acetone_* / Aceton_* (etc.). Skips Normal_Air_* if a pattern ever overlaps.
+    Deduplicates by resolved path when both spellings exist.
+    """
+    seen = set()
+    blocks, labels = [], []
+    for pref in measurement_file_prefixes(sub):
+        for f in sorted(folder.glob(f"{pref}_*")):
+            if f.stem.lower().startswith("normal_air"):
+                continue
+            key = f.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            blks = load_blocks_from_file(f)
+            for i, b in enumerate(blks):
+                blocks.append(b)
+                labels.append(f"{f.stem}" + (f"_{i}" if len(blks) > 1 else ""))
+    return blocks, labels
+
+
 SENSOR_COL, STEP_COL, GR_COL, ERROR_COL, CYCLE_COL = 0, 8, 7, 12, 11
 
 # Windowing: drop first n unstable, take m steady-state values per (sensor, HS)
